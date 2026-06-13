@@ -10,8 +10,10 @@ catches supported + contradicted but tanks entailed recall).
 from __future__ import annotations
 
 import ast
+import hashlib
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -23,6 +25,28 @@ from data.eval_set import (
     ENTAILED_CLAIMS,
     CONTRADICTED_CLAIMS,
 )
+
+
+# ---------------------------------------------------------------------------
+# learner_notes.md must be touched (rubric-graded deliverable)
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_UNMODIFIED_LEARNER_NOTES_MD5 = "9f491e688e6cf570710b9e95a7717ba4"
+
+
+def test_learner_notes_modified():
+    """Sentinel: `learner_notes.md` is a TA-rubric-graded deliverable.
+    A submission whose `learner_notes.md` is byte-identical to the
+    starter template has not been filled in.
+    """
+    notes = _REPO_ROOT / "learner_notes.md"
+    assert notes.exists(), "learner_notes.md is missing from the submission"
+    h = hashlib.md5(notes.read_bytes()).hexdigest()
+    assert h != _UNMODIFIED_LEARNER_NOTES_MD5, (
+        "learner_notes.md is the unmodified starter template. Replace each "
+        "bullet question with a narrative answer before resubmitting."
+    )
 from critic.verify import verify_claim
 
 
