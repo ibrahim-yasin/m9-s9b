@@ -36,6 +36,3 @@ The critic should return `unsupported` when the graph does not directly support 
 
 Over-flagging a claim as `contradicted` is worse than abstaining because `contradicted` makes a stronger statement. It says the claim is structurally impossible according to the schema, not just missing from the graph. If the critic marks unknown claims as contradictions, it becomes overconfident and less trustworthy.
 
-## Optional — M8 router warm-up
-
-I skipped the optional M8 router warm-up because my M8 stretch router was not part of this repository branch. The M9 KG critic still works as a standalone verifier through `verify_claim(driver, claim)`.
