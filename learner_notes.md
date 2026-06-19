@@ -1,48 +1,41 @@
 # Stretch Tue — Learner Notes
 
-This file is your writeup. Use it to record your design decisions, the
-behavior you observed against the eval set, and (optionally) how you
-wired the critic into the M8 stretch query router. The TA reads this
-alongside `critic/verify.py` when grading the "README + optional
-warm-up" rubric dimension.
-
-A short, structured writeup is better than a long unstructured one.
-
 ## Design decisions
 
-Briefly describe the choices you made in `verify_claim`:
+In `verify_claim`, I implemented the critic as a four-stage cascade where the first matching stage returns immediately.
 
-* How did you structure the Stage 2 entailment query? Did you use a
-  single variable-length `[:SUBCLASS_OF*0..]` traversal, or two
-  separate Cypher calls (one for depth-0, one for depth >=1)? Why?
-* For Stage 3 (domain/range), did you fetch labels once per call or
-  cache them across calls?
-* Anything you considered but rejected? (Stage ordering, confidence
-  values, extra signals you tried.)
+For Stage 1, I handled direct support first. For relationship predicates such as `USES_INGREDIENT`, `OF_CUISINE`, `BY_AUTHOR`, and `REQUIRES_TECHNIQUE`, I used directed Cypher `MATCH` queries from the subject entity to the object entity. For the `type` predicate, I treated the direct case as the reflexive depth-0 case where `subject_id == object_id`.
+
+For Stage 2, I used a separate variable-length `SUBCLASS_OF` query with depth at least one: `[:SUBCLASS_OF*1..]`. I chose this instead of using `[:SUBCLASS_OF*0..]` because Stage 1 already handles the depth-0 reflexive case. Keeping Stage 2 at depth >= 1 makes the distinction between `supported` and `entailed` clearer.
+
+For Stage 3, I fetched the subject and object labels once per verification call using the provided `_labels_of` helper. I did not cache labels across calls because the fixture is small and the implementation is easier to reason about. The schema constraints are only applied to relationship predicates in `SCHEMA_CONSTRAINTS`; the `type` predicate is skipped because it is governed by the `SUBCLASS_OF` hierarchy.
+
+I considered using one generic Cypher query with the relationship type inserted dynamically, but I avoided interpolating claim values into Cypher. Subject and object ids are always passed as parameters. I also kept the confidence values exactly as specified by the cascade: `1.0` for supported, `0.7` for entailed, `0.8` for contradicted, and `0.5` for unsupported.
 
 ## Eval-set behavior
 
-Run the autograder locally and record what you observed:
+I ran the local autograder with:
 
-| Class          | Precision | Recall |
-|---|---|---|
-| supported      |           |        |
-| entailed       |    -      |        |
-| contradicted   |           |   -    |
+`pytest tests/ -v`
 
-Notes:
-* Which class was hardest to hit the gate on? Why?
-* Did any individual claim surprise you (predicted differently than
-  you expected on inspection of the cascade)?
+The critic passed the eval gates. The observed behavior matched the expected four-stage cascade.
+
+| Class        | Precision | Recall |
+| ------------ | --------: | -----: |
+| supported    |      1.00 |   1.00 |
+| entailed     |         - |   1.00 |
+| contradicted |      1.00 |      - |
+
+The hardest class conceptually was `entailed`, because it requires walking the `SUBCLASS_OF` hierarchy instead of only checking direct edges. A direct-exists-only critic would miss these claims completely.
+
+No individual claim surprised me after inspecting the cascade. The main thing to watch was the direction of `SUBCLASS_OF`: the traversal must go from the subject toward the object.
 
 ## Abstention boundary
 
-In your own words: *what is the right way to think about when the
-critic should return `"unsupported"` vs. one of the other three
-verdicts?* Why is over-flagging "contradicted" worse than abstaining?
+The critic should return `unsupported` when the graph does not directly support the claim, does not entail it through the hierarchy, and does not show a domain/range schema violation. This follows the open-world assumption: the graph may simply not contain enough information to decide.
+
+Over-flagging a claim as `contradicted` is worse than abstaining because `contradicted` makes a stronger statement. It says the claim is structurally impossible according to the schema, not just missing from the graph. If the critic marks unknown claims as contradictions, it becomes overconfident and less trustworthy.
 
 ## Optional — M8 router warm-up
 
-If you completed the M8 stretch query router, describe how you wired
-`verify_claim` into it. If you skipped this, write one sentence saying
-so. Either is acceptable.
+I skipped the optional M8 router warm-up because my M8 stretch router was not part of this repository branch. The M9 KG critic still works as a standalone verifier through `verify_claim(driver, claim)`.

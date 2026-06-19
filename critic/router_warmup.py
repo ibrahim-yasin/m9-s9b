@@ -1,40 +1,26 @@
-"""OPTIONAL — M8 stretch query router warm-up.
+"""OPTIONAL — M8 stretch query router warm-up."""
 
-Bridges the M8 → M9 → M10 cumulative multi-agent artifact. If you
-completed the M8 stretch (query router with vector / BM25 / metadata
-branches), you can register the M9 KG critic as the **KG branch** so a
-single router can either retrieve OR verify, depending on the routed
-intent.
+from critic.verify import verify_claim
 
-Not autograder-gated — rubric points only (see Stretch Tue page).
-Degrades gracefully: a learner who did not complete M8 stretch can
-leave this file untouched and forfeit only the warm-up portion of the
-rubric.
 
-────────────────────────────────────────────────────────────────────
-Reference shape (not a working implementation — your M8 router may
-have a different surface):
+def register_kg_branch(router, neo4j_driver) -> None:
+    """Register the M9 KG critic as the KG verification branch.
 
-    from m8_stretch.router import QueryRouter
-    from critic.verify import verify_claim
-    from neo4j import GraphDatabase
+    When the router classifies a query as "verify_claim", this branch
+    extracts the structured claim tuple and sends it to verify_claim.
+    """
 
-    def register_kg_branch(router: QueryRouter, neo4j_driver) -> None:
-        '''Register verify_claim as the KG branch of the router.
+    def kg_branch(query):
+        # Expected shape from the reference:
+        # query.payload["claim"] == (subject_id, predicate, object_id)
 
-        The router classifies the incoming query intent. When the intent
-        is "verify_claim" (the query carries a structured (s, p, o)
-        claim), the router dispatches to verify_claim instead of any of
-        the retrieval branches.
-        '''
-        def kg_branch(query):
-            claim = query.payload["claim"]  # adjust to your router's payload shape
-            return verify_claim(neo4j_driver, claim)
+        if hasattr(query, "payload"):
+            claim = query.payload["claim"]
+        elif isinstance(query, dict):
+            claim = query["payload"]["claim"]
+        else:
+            raise ValueError("Query must expose a payload containing a claim.")
 
-        router.register("verify_claim", kg_branch)
+        return verify_claim(neo4j_driver, claim)
 
-────────────────────────────────────────────────────────────────────
-Write a brief paragraph in ``learner_notes.md`` describing how you
-wired this in (or why you skipped it). Either is acceptable; the
-rubric rewards a thoughtful writeup.
-"""
+    router.register("verify_claim", kg_branch)

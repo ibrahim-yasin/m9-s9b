@@ -62,80 +62,94 @@ def _labels_of(driver, node_id: str) -> list[str]:
 
 
 def verify_claim(driver, claim: tuple[str, str, str]) -> Verdict:
-    """Adjudicate a (subject_id, predicate, object_id) claim against the
-    recipes graph via the four-stage cascade documented at the top of
-    this module.
-
-    Parameters
-    ----------
-    driver
-        A connected `neo4j.GraphDatabase.driver(...)` instance.
-    claim
-        A 3-tuple ``(subject_id, predicate, object_id)``. ``predicate``
-        is either ``"type"`` (class-membership claim) or one of the
-        relationship-type keys in ``SCHEMA_CONSTRAINTS``.
-
-    Returns
-    -------
-    Verdict
-        With the verdict label, an evidence_paths list (node-id chains),
-        and the confidence pinned by the cascade stage.
-
-    Implementation requirements
-    ---------------------------
-    * All Cypher MUST be parameterized — pass `subject_id`, `predicate`,
-      `object_id` through `session.run(..., key=value)` keyword args.
-      f-string interpolation of any claim component into a Cypher string
-      is a test failure (see `test_verify_uses_parameterized_cypher`).
-    * The relationship-type filter cannot be a parameter in vanilla
-      Cypher; you may template-substitute the predicate string ONLY
-      after validating it is a known relationship type (e.g., it appears
-      in SCHEMA_CONSTRAINTS or equals one of the known type names). The
-      claim's subject/object ids must still flow through `$param` slots.
-    """
     subject_id, predicate, object_id = claim
 
-    # TODO — Stage 1: direct existence check.
-    #
-    # For the "type" predicate, this is the reflexive case (subject_id ==
-    # object_id), or equivalently a depth-0 SUBCLASS_OF traversal.
-    # For relationship predicates (USES_INGREDIENT, OF_CUISINE,
-    # BY_AUTHOR, REQUIRES_TECHNIQUE), this is a MATCH on the directed
-    # edge between the two :Entity nodes with the matching ids.
-    # If the edge exists, return:
-    #   Verdict("supported", [(subject_id, object_id)], 1.0)
+    # -------------------------
+    # Stage 1 — Direct EXISTS
+    # -------------------------
 
-    # TODO — Stage 2: hierarchical entailment via [:SUBCLASS_OF*0..].
-    #
-    # Only relevant for the "type" predicate (the SUBCLASS_OF hierarchy
-    # encodes is-a relations; recipe-level edges do not have a hierarchy
-    # in this fixture). If the subject reaches the object along a path
-    # of one or more SUBCLASS_OF hops, the claim is entailed (not
-    # directly asserted but logically implied). Build the evidence path
-    # from the actual node ids visited in the chain. Return:
-    #   Verdict("entailed", [tuple_of_ids_along_chain], 0.7)
-    #
-    # Note: Stage 1 already covered the depth-0 case. Stage 2 must look
-    # for depth >= 1, so the entailed-only label is distinguishable from
-    # supported.
+    # "type" direct support = reflexive depth-0 case
+    if predicate == "type":
+        if subject_id == object_id:
+            return Verdict("supported", [(subject_id, object_id)], 1.0)
 
-    # TODO — Stage 3: domain/range violation detection.
-    #
-    # Look up `predicate` in SCHEMA_CONSTRAINTS. If present, fetch the
-    # actual labels of the subject and object nodes (you may use the
-    # course-provided `_labels_of` helper). If either side's label does
-    # NOT match the expected label, the claim is structurally impossible
-    # — return:
-    #   Verdict("contradicted", [(subject_id, object_id)], 0.8)
-    #
-    # If the predicate is not in SCHEMA_CONSTRAINTS (e.g., "type"), skip
-    # this stage and proceed to Stage 4.
+    elif predicate in SCHEMA_CONSTRAINTS:
+        # Avoid f-string interpolation completely by using fixed query templates.
+        direct_queries = {
+            "USES_INGREDIENT": """
+                MATCH (h:Entity {id: $subject_id})-[:USES_INGREDIENT]->(t:Entity {id: $object_id})
+                RETURN h.id AS h, t.id AS t
+                LIMIT 1
+            """,
+            "OF_CUISINE": """
+                MATCH (h:Entity {id: $subject_id})-[:OF_CUISINE]->(t:Entity {id: $object_id})
+                RETURN h.id AS h, t.id AS t
+                LIMIT 1
+            """,
+            "BY_AUTHOR": """
+                MATCH (h:Entity {id: $subject_id})-[:BY_AUTHOR]->(t:Entity {id: $object_id})
+                RETURN h.id AS h, t.id AS t
+                LIMIT 1
+            """,
+            "REQUIRES_TECHNIQUE": """
+                MATCH (h:Entity {id: $subject_id})-[:REQUIRES_TECHNIQUE]->(t:Entity {id: $object_id})
+                RETURN h.id AS h, t.id AS t
+                LIMIT 1
+            """,
+        }
 
-    # TODO — Stage 4: abstain. None of the prior stages fired.
-    #
-    #   return Verdict("unsupported", [], 0.5)
+        with driver.session() as session:
+            row = session.run(
+                direct_queries[predicate],
+                subject_id=subject_id,
+                object_id=object_id,
+            ).single()
 
-    raise NotImplementedError(
-        "verify_claim is not yet implemented — see the cascade docstring "
-        "and Stretch Tue page."
-    )
+        if row:
+            return Verdict("supported", [(row["h"], row["t"])], 1.0)
+
+    else:
+        return Verdict("unsupported", [], 0.5)
+
+    # ------------------------------------------
+    # Stage 2 — Hierarchical entailment for type
+    # ------------------------------------------
+
+    if predicate == "type":
+        query = """
+            MATCH path = (h:Entity {id: $subject_id})-[:SUBCLASS_OF*1..]->(t:Entity {id: $object_id})
+            RETURN [n IN nodes(path) | n.id] AS chain
+            LIMIT 1
+        """
+
+        with driver.session() as session:
+            row = session.run(
+                query,
+                subject_id=subject_id,
+                object_id=object_id,
+            ).single()
+
+        if row:
+            return Verdict("entailed", [tuple(row["chain"])], 0.7)
+
+    # --------------------------------
+    # Stage 3 — Domain/range violation
+    # --------------------------------
+
+    if predicate in SCHEMA_CONSTRAINTS:
+        expected_source_label, expected_target_label = SCHEMA_CONSTRAINTS[predicate]
+
+        source_labels = set(_labels_of(driver, subject_id))
+        target_labels = set(_labels_of(driver, object_id))
+
+        if (
+            expected_source_label not in source_labels
+            or expected_target_label not in target_labels
+        ):
+            return Verdict("contradicted", [(subject_id, object_id)], 0.8)
+
+    # -------------------------
+    # Stage 4 — Abstain
+    # -------------------------
+
+    return Verdict("unsupported", [], 0.5)
